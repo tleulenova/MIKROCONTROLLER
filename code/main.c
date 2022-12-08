@@ -1,0 +1,120 @@
+#include <16F877A.h>
+#device adc=10 // set adc module conversion range as 10bit
+#FUSES XT, NOWDT, NOPROTECT, NOBROWNOUT, NOLVP, NOPUT, NODEBUG, NOCPD
+#use delay(crystal=4000000)
+#include <lcd.c>
+
+int8 last_read; //variable to check changing encoder value
+signed int8 quad = 0; //variable to change position variable
+#INT_RB // RB port interrupt on change
+void RB_IOC_ISR(void) //interrupt function for every encoder read
+{
+ int8 encoderRead; // variable to be used in motor encoder reading
+ clear_interrupt(INT_RB);
+ encoderRead = input_b() & 0x30;  //reading the encoder input
+ if(encoderRead == last_read)     // check if the position is changed
+  return;  // if the position is not changed ,do nothing
+ //checking the direciton of the change
+ if(bit_test(encoderRead, 4) == bit_test(last_read, 5))  //to determine the rotation
+  quad -= 1;       //if the rotation is ccw add one to quad variable
+ else
+  quad += 1;       //if the rotation is cw subtract one from quad variable
+ last_read = encoderRead;    //store the latest read
+}
+int16 EncoderGet(void) {
+//function for converting readed values to position change
+  signed int16 value = 0;          //reset the change to zero
+  //returning directional value
+  while(quad >= 4){    //if quad is 4, 1 pulse period is done in ccw direction
+
+    value += 1;  //add 1 to value to store change in the number of pulses or angles
+    quad -= 4;   //reset quad to zero
+
+  }
+  while(quad <= -4){    //if quad is -4, 1 pulse period is done in cw direction
+    value -= 1;         //subtract 1 from value to store change in the number of pulses of angles
+    quad += 4;      // reset quad to zero
+  }
+  return value;    // function returns the value of change in the angle
+}
+int16 PWM(int16 a,int16 b) //function for calculating PWM value
+{
+ signed int16 value;
+ value=a*b; //will get error and Kp values as inputs
+ //bounding the PWM value
+ if (value>1023)
+  return 1023;
+ else if (value<0)
+  return 0;
+ else
+  return value;
+}
+
+void main()
+{
+ //variables
+ int16 refangle;
+ int16 analog_controller;
+ int default_kp = 10;
+ int V = 80;
+ int16 realPosition = 0; 
+ int16 error = 0;
+ 
+ lcd_init();
+ delay_ms(10);
+ set_tris_c(0x00000000); //setting the outputs
+ output_c(0x00);
+ 
+ setup_ccp1(CCP_PWM); //setuping the PWM
+ setup_timer_2(T2_DIV_BY_16, 255, 1);
+ 
+ setup_adc_ports(AN0_AN1_AN3); //setuping the analog reading
+ setup_adc(ADC_CLOCK_DIV_32);
+ 
+ enable_interrupts(INT_RB);
+ enable_interrupts(GLOBAL);
+ clear_interrupt(INT_RB);
+ while(True)
+ {
+  //analog reading
+  set_adc_channel(0); 
+  delay_us(10);
+  refangle = read_adc();
+  //converting readed value to wanted variable
+  int16 reference_angle =((float)refangle*250/1023)+20;
+  set_adc_channel(1);
+  delay_us(10);
+  analog_controller = read_adc();
+  int16 control_gain = default_kp + 
+  ((float)analog_controller/1023)*V;
+ 
+  long change = EncoderGet(); //getting position change from encoder
+  if(change)
+  {
+   realPosition += change; //updating the position
+  }
+  float rev = realPosition/360.0f;
+  int16 angle = ((int16)(rev*360))%360;
+  //getting error direction and starting the motor and its velocity accordingly
+  if(angle<=reference_angle)
+   {
+    error = reference_angle-angle;
+    set_pwm1_duty(PWM(control_gain,error));
+    output_high(PIN_C0);
+    output_low(PIN_C1);
+   }
+  if(angle>reference_angle)
+   {
+    error = angle-reference_angle;
+    set_pwm1_duty(PWM(control_gain,error));
+    output_low(PIN_C0);
+    output_high(PIN_C1);
+   }
+  //printing desired values on LCD
+  printf(lcd_putc, "\fRef=%lu   ", reference_angle);
+  printf(lcd_putc, "Kp=%lu", control_gain);
+  printf(lcd_putc, "\nPos=%lu ", realPosition);
+  printf(lcd_putc, "PWM=%lu",PWM(control_gain,error));
+  delay_ms(10);
+  }
+}
